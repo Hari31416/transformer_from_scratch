@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tokenizers import Tokenizer
+import evaluate
 import pandas as pd
 
 from typing import Callable, Optional, List, Tuple
@@ -219,38 +220,8 @@ class TransformerTrainer:
             return losses, train_states, eval_losses, eval_states
         return losses, train_states
 
-    def greedy_decode(self, text: str):
-        text = [f"[CLS]{text}[SEP]"]
-        max_len = self.max_len
-
-        source = self.source_tokenizer.encode_batch(text)
-        source = torch.tensor([enc.ids for enc in source]).to(self.device)
-        source_pad_token = self.source_tokenizer.token_to_id("[PAD]")
-        source_mask = (source != source_pad_token).unsqueeze(-2)
-
-        target_start_symbol = self.target_tokenizer.token_to_id("[CLS]")
-        memory = self.model.encode(source, source_mask)
-        ys = torch.zeros(1, 1).fill_(target_start_symbol).type_as(source.data)
-
-        for i in range(max_len - 1):
-            out = self.model.decode(
-                memory,
-                ys,
-                source_mask,
-                subsequent_mask(ys.size(1)).type_as(source.data),
-            )
-            prob = self.model.generator(out[:, -1])
-            _, next_word = torch.max(prob, dim=1)
-            next_word = next_word.data[0]
-            ys = torch.cat(
-                [ys, torch.zeros(1, 1).type_as(source.data).fill_(next_word)], dim=1
-            )
-
-        rank = len(ys.shape)
-        if rank == 1:
-            ys = ys.unsqueeze(0)
-
-        return self.target_tokenizer.decode_batch(ys.tolist()), ys
+    def greedy_decode(self, text: str, **kwargs):
+        pass  # must be implemented in the child class
 
     def log_sample_to_wandb(self, wandb=None):
         pass  # Must be implemented in the child class
@@ -282,6 +253,39 @@ class TransformerTrainerForTranslation(TransformerTrainer):
             wandb_log_freq,
             max_len,
         )
+
+    def greedy_decode(self, text: str, **kwargs):
+        text = [f"[CLS]{text}[SEP]"]
+        max_len = self.max_len
+
+        source = self.source_tokenizer.encode_batch(text)
+        source = torch.tensor([enc.ids for enc in source]).to(self.device)
+        source_pad_token = self.source_tokenizer.token_to_id("[PAD]")
+        source_mask = (source != source_pad_token).unsqueeze(-2)
+
+        target_start_symbol = self.target_tokenizer.token_to_id("[CLS]")
+        memory = self.model.encode(source, source_mask)
+        ys = torch.zeros(1, 1).fill_(target_start_symbol).type_as(source.data)
+
+        for i in range(max_len - 1):
+            out = self.model.decode(
+                memory,
+                ys,
+                source_mask,
+                subsequent_mask(ys.size(1)).type_as(source.data),
+            )
+            prob = self.model.generator(out[:, -1])
+            _, next_word = torch.max(prob, dim=1)
+            next_word = next_word.data[0]
+            ys = torch.cat(
+                [ys, torch.zeros(1, 1).type_as(source.data).fill_(next_word)], dim=1
+            )
+
+        rank = len(ys.shape)
+        if rank == 1:
+            ys = ys.unsqueeze(0)
+
+        return self.target_tokenizer.decode_batch(ys.tolist()), ys
 
     def log_sample_to_wandb(self, wandb=None):
         samples = [
@@ -321,6 +325,12 @@ class TransformerTrainerForTranslation(TransformerTrainer):
 
             pprint(log_dict)
         else:
+            try:
+                bleu = evaluate.load("bleu")
+                score = bleu.compute(predictions=translations, references=ground_truths)
+                wandb.log({"bleu_score": score["bleu"]})
+            except:  # possibly ZeroDevisionError when target length is zero for initial batches
+                pass
             text_table = wandb.Table(
                 columns=["ground_truth", "translation", "source", "tokens"]
             )
@@ -329,6 +339,70 @@ class TransformerTrainerForTranslation(TransformerTrainer):
                     ground_truths[i], translations[i], samples[i], translations_ids[i]
                 )
             wandb.log({"translations": text_table})
+
+
+class TransformerTrainerForGeneration(TransformerTrainer):
+    def __init__(
+        self,
+        model: Transformer,
+        optimizer: torch.optim.Optimizer,
+        criterion: Callable[[T, T, Optional[int]], T],
+        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+        device: Optional[str] = None,
+        tokenizer: Optional[Tokenizer] = None,
+        wandb=None,
+        wandb_log_freq: int = 100,
+        max_len: int = 32,
+    ):
+        super().__init__(
+            model,
+            optimizer,
+            criterion,
+            scheduler,
+            device,
+            tokenizer,
+            tokenizer,
+            wandb,
+            wandb_log_freq,
+            max_len,
+        )
+
+    def greedy_decode(self, text: str, **kwargs):
+        text = [f"[CLS]{text}[SEP]"]
+        max_len = self.max_len
+
+        source = self.source_tokenizer.encode_batch(text)
+        source = torch.tensor([enc.ids for enc in source]).to(self.device)
+        source_length = source.shape[1]
+        if source_length > max_len:
+            msg = f"Input text is too long. Max length is {max_len}, but the input text is {source_length}"
+
+            raise ValueError(msg)
+        source_pad_token = self.source_tokenizer.token_to_id("[PAD]")
+        source_mask = (source != source_pad_token).unsqueeze(-2)
+
+        memory = self.model.encode(source, source_mask)
+        ys = source  # start with the source
+
+        for i in range(max_len - 1):
+            out = self.model.decode(
+                memory,
+                ys,
+                source_mask,
+                subsequent_mask(ys.size(1)).type_as(source.data),
+            )
+            prob = self.model.generator(out[:, -1])
+            _, next_word = torch.max(prob, dim=1)
+            next_word = next_word.data[0]
+            ys = torch.cat(
+                [ys, torch.zeros(1, 1).type_as(source.data).fill_(next_word)], dim=1
+            )
+
+        rank = len(ys.shape)
+        if rank == 1:
+            ys = ys.unsqueeze(0)
+
+        return self.target_tokenizer.decode_batch(ys.tolist()), ys
 
 
 class TranslationDataset(torch.utils.data.Dataset):
@@ -428,6 +502,22 @@ class TransformerTrainerConfig(Config):
         "max_len",
     ]
     ConfigFor = TransformerTrainer
+
+
+class TransformerTrainerForGenerationConfig(Config):
+    ALLOWED_KEYS = [
+        "model",
+        "optimizer",
+        "criterion",
+        "scheduler",
+        "device",
+        "source_tokenizer",
+        "target_tokenizer",
+        "wandb",
+        "wandb_log_freq",
+        "max_len",
+    ]
+    ConfigFor = TransformerTrainerForGeneration
 
 
 class TranslationDatasetConfig(Config):
