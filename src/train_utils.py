@@ -1,4 +1,4 @@
-from .transformer import subsequent_mask, Transformer, Config
+from .transformer import subsequent_mask, Transformer, Config, DecoderOnlyTransformer
 
 import time
 import torch
@@ -8,7 +8,7 @@ from tokenizers import Tokenizer
 import evaluate
 import pandas as pd
 
-from typing import Callable, Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple, Union
 from tqdm.auto import tqdm
 
 T = torch.Tensor
@@ -75,7 +75,7 @@ class TransformerTrainer:
 
     def __init__(
         self,
-        model: Transformer,
+        model: Union[Transformer, DecoderOnlyTransformer],
         optimizer: torch.optim.Optimizer,
         criterion: Callable[[T, T, Optional[int]], T],
         scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
@@ -101,6 +101,7 @@ class TransformerTrainer:
         self.wandb = wandb
         self.wandb_log_freq = wandb_log_freq
         self.max_len = max_len
+        self.decoder_only = True if isinstance(model, DecoderOnlyTransformer) else False
 
     def run_epoch(
         self,
@@ -118,9 +119,13 @@ class TransformerTrainer:
         tokens = 0
         n_accum = 0
         for i, batch in enumerate(tqdm(data_iter)):
-            out = self.model.forward(
-                batch.source, batch.target, batch.source_mask, batch.target_mask
-            )
+            if self.decoder_only:
+                # source and target are same but the target is shifted by one
+                out = self.model.forward(batch.target, batch.target_mask)
+            else:
+                out = self.model.forward(
+                    batch.source, batch.target, batch.source_mask, batch.target_mask
+                )
             out_g = self.model.generate(out)
             loss_node: T = self.criterion(out_g, batch.target_y, batch.ntokens)
             loss = loss_node.item()
@@ -144,7 +149,7 @@ class TransformerTrainer:
             if i % log_freq == 1 and mode == "train":
                 lr = self.optimizer.param_groups[0]["lr"]
                 elapsed = time.time() - start
-                msg = f"Batch Step: {i}, Loss: {loss / batch.ntokens :4f}, Tokens / Sec: {tokens / elapsed :4f}, Learning Rate: {lr}"
+                msg = f"Batch Step: {i}, Loss*100: {100*(loss / batch.ntokens ):6f}, Tokens / Sec: {tokens / elapsed :4f}, Learning Rate: {lr}"
                 print(msg)
                 start = time.time()
                 tokens = 0
@@ -526,6 +531,88 @@ class TranslationDataset(torch.utils.data.Dataset):
         )
 
 
+class GenerationDataset(torch.utils.data.Dataset):
+
+    def __init__(
+        self,
+        dataset_path: str,
+        tokenizer_path: str,
+        text_column: str,
+        max_len: int = 64,
+        device: Optional[str] = None,
+    ):
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.device = device
+
+        self.df = pd.read_csv(dataset_path)
+
+        self.tokenizer: Tokenizer = Tokenizer.from_file(tokenizer_path)
+        self.tokenizer.enable_truncation(max_length=max_len)
+        self.tokenizer.enable_padding(
+            pad_id=self.tokenizer.token_to_id("[PAD]"),
+            pad_token="[PAD]",
+            length=max_len,
+        )
+        self.max_len = max_len
+        self.text_column = text_column
+        self.lyrics = self.split()
+
+    def split(self):
+        import re
+
+        lyrics: List[str] = self.df[self.text_column].tolist()
+        lyrics = " ".join(lyrics)
+        # remove any character that are not numbers, alphabets, or punctuations
+        lyrics = re.sub(r"[^a-zA-Z0-9.,!?]+", " ", lyrics)
+        lyrics_list = lyrics.split(" ")
+
+        max_len = int(self.max_len * 0.66)  # one word may have multiple tokens
+        lyrics_final = [
+            lyrics_list[i : i + self.max_len]
+            for i in range(0, len(lyrics_list), self.max_len)
+        ]
+
+        lyrics_final = [" ".join(lyric) for lyric in lyrics_final]
+        return lyrics_final
+
+    def __len__(self):
+        return len(self.lyrics)
+
+    def __getitem__(self, idx):
+        return self.lyrics[idx]
+
+    def collate_fn(self, batch) -> Batch:
+        src = ["[CLS] " + s + " [SEP]" for s in batch]
+        src_encodings = self.tokenizer.encode_batch(src)
+        src_encodings = torch.tensor([enc.ids for enc in src_encodings]).to(self.device)
+
+        return Batch(
+            source=src_encodings,
+            target=src_encodings,
+            pad=self.tokenizer.token_to_id("[PAD]"),
+        )
+
+    def get_dataloader(self, batch_size: int, shuffle: bool = False):
+        return DataLoader(
+            self, batch_size=batch_size, shuffle=shuffle, collate_fn=self.collate_fn
+        )
+
+    def decode(self, tokens: T, tokenizer: Tokenizer) -> str:
+        rank = len(tokens.shape)
+        if rank == 1:
+            tokens = tokens.unsqueeze(0)
+
+        return tokenizer.decode_batch(tokens.tolist())
+
+    def decode_text(self, tokens: T) -> str:
+        return self.decode(tokens, self.tokenizer)
+
+    def decode_batch(self, batch: Batch) -> List[str]:
+        return [self.decode_text(enc) for enc in batch.source]
+
+
 class TransformerTrainerConfig(Config):
     ALLOWED_KEYS = [
         "model",
@@ -584,3 +671,14 @@ class TranslationDatasetConfig(Config):
         "device",
     ]
     ConfigFor = TranslationDataset
+
+
+class GenerationDatasetConfig(Config):
+    ALLOWED_KEYS = [
+        "dataset_path",
+        "tokenizer_path",
+        "text_column",
+        "max_len",
+        "device",
+    ]
+    ConfigFor = GenerationDataset
