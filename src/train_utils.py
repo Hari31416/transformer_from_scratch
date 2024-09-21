@@ -459,7 +459,7 @@ class TransformerTrainerForGeneration(TransformerTrainer):
             "salt air and the rust on your door",
             "no other sadness in the world would do",
             "One slip and falling back into the hedge maze\nOh what a way to die",
-            "It's me, hi, I'm the problem, it's me\nAt tea time, everybody agrees"
+            "It's me, hi, I'm the problem, it's me\nAt tea time, everybody agrees",
             "there i was again tonight forcing laughter faking smiles same old tired lonely place",
             "i said remember this moment in the back of my mind",
             "I was supposed to be sent away\nBut they forgot to come and get me",
