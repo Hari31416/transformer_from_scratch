@@ -549,13 +549,28 @@ class TransformerTrainerForGenerationConfig(Config):
         "criterion",
         "scheduler",
         "device",
+        "tokenizer",
+        "wandb",
+        "wandb_log_freq",
+        "max_len",
+    ]
+    ConfigFor = TransformerTrainerForGeneration
+
+
+class TransformerTrainerForTranslationConfig(Config):
+    ALLOWED_KEYS = [
+        "model",
+        "optimizer",
+        "criterion",
+        "scheduler",
+        "device",
         "source_tokenizer",
         "target_tokenizer",
         "wandb",
         "wandb_log_freq",
         "max_len",
     ]
-    ConfigFor = TransformerTrainerForGeneration
+    ConfigFor = TransformerTrainerForTranslation
 
 
 class TranslationDatasetConfig(Config):
