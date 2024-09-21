@@ -580,17 +580,14 @@ class GenerationDataset(torch.utils.data.Dataset):
         self,
         dataset_path: str,
         tokenizer_path: str,
-        text_column: str,
-        max_len: int = 64,
+        max_len: int = 80,
         device: Optional[str] = None,
     ):
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.device = device
-
-        self.df = pd.read_csv(dataset_path)
-
+        self.dataset_path = dataset_path
         self.tokenizer: Tokenizer = Tokenizer.from_file(tokenizer_path)
         self.tokenizer.enable_truncation(max_length=max_len)
         self.tokenizer.enable_padding(
@@ -599,25 +596,20 @@ class GenerationDataset(torch.utils.data.Dataset):
             length=max_len,
         )
         self.max_len = max_len
-        self.text_column = text_column
-        self.lyrics = self.split()
+        self.lyrics = self.fetch_all_lyrics(dataset_path)
 
-    def split(self):
-        import re
+    def fetch_all_lyrics(self, songs_file_path):
+        import json
 
-        lyrics: List[str] = self.df[self.text_column].tolist()
-        lyrics = " ".join(lyrics)
-        # remove any character that are not numbers, alphabets, or punctuations
-        lyrics = re.sub(r"[^a-zA-Z0-9.,!?]+", " ", lyrics)
-        lyrics_list = lyrics.split(" ")
+        with open(songs_file_path, "r") as f:
+            songs = json.load(f)
+        lyrics = []
+        for _, sections in songs.items():
 
-        max_len = int(self.max_len * 0.66)  # one word may have multiple tokens
-        lyrics_final = [
-            lyrics_list[i : i + max_len] for i in range(0, len(lyrics_list), max_len)
-        ]
+            for section in sections:
+                lyrics.append(section["lyrics"])
 
-        lyrics_final = [" ".join(lyric) for lyric in lyrics_final]
-        return lyrics_final
+        return lyrics
 
     def __len__(self):
         return len(self.lyrics)
