@@ -220,9 +220,6 @@ class TransformerTrainer:
             return losses, train_states, eval_losses, eval_states
         return losses, train_states
 
-    def greedy_decode(self, text: str, **kwargs):
-        pass  # must be implemented in the child class
-
     def log_sample_to_wandb(self, wandb=None):
         pass  # Must be implemented in the child class
 
@@ -254,7 +251,7 @@ class TransformerTrainerForTranslation(TransformerTrainer):
             max_len,
         )
 
-    def greedy_decode(self, text: str, **kwargs):
+    def translate(self, text: str, **kwargs):
         text = [f"[CLS]{text}[SEP]"]
         max_len = self.max_len
 
@@ -266,6 +263,7 @@ class TransformerTrainerForTranslation(TransformerTrainer):
         target_start_symbol = self.target_tokenizer.token_to_id("[CLS]")
         memory = self.model.encode(source, source_mask)
         ys = torch.zeros(1, 1).fill_(target_start_symbol).type_as(source.data)
+        end_token = self.target_tokenizer.token_to_id("[SEP]")
 
         for i in range(max_len - 1):
             out = self.model.decode(
@@ -280,6 +278,8 @@ class TransformerTrainerForTranslation(TransformerTrainer):
             ys = torch.cat(
                 [ys, torch.zeros(1, 1).type_as(source.data).fill_(next_word)], dim=1
             )
+            if next_word == end_token:
+                break
 
         rank = len(ys.shape)
         if rank == 1:
@@ -310,8 +310,8 @@ class TransformerTrainerForTranslation(TransformerTrainer):
         ]
         translations = []
         translations_ids = []
-        for sample in tqdm(samples, desc="Translating..."):
-            translation, translation_ids = self.greedy_decode(sample)
+        for sample in tqdm(samples, desc="Translating...", disable=True):
+            translation, translation_ids = self.translate(sample)
             translations.append(translation[0])
             translations_ids.append(translation_ids[0].tolist())
         log_dict = {
@@ -383,6 +383,7 @@ class TransformerTrainerForGeneration(TransformerTrainer):
 
         memory = self.model.encode(source, source_mask)
         ys = source  # start with the source
+        end_token = self.target_tokenizer.token_to_id("[SEP]")
 
         for i in range(max_len - 1):
             out = self.model.decode(
@@ -397,6 +398,8 @@ class TransformerTrainerForGeneration(TransformerTrainer):
             ys = torch.cat(
                 [ys, torch.zeros(1, 1).type_as(source.data).fill_(next_word)], dim=1
             )
+            if next_word == end_token:
+                break
 
         rank = len(ys.shape)
         if rank == 1:
