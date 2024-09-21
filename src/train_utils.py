@@ -453,13 +453,16 @@ class TransformerTrainerForGeneration(TransformerTrainer):
         )
 
     def log_sample_to_wandb(self, wandb=None):
+        # some sample taylor swift lyrics
+        # some of them are in the dataset, others are not
         sample_taylor_swift_lyrics = [
             "salt air and the rust on your door",
             "no other sadness in the world would do",
-            "make sure nobody sees you leave hood over your head keep your eyes down",
+            "One slip and falling back into the hedge maze\nOh what a way to die",
+            "It's me, hi, I'm the problem, it's me\nAt tea time, everybody agrees"
             "there i was again tonight forcing laughter faking smiles same old tired lonely place",
             "i said remember this moment in the back of my mind",
-            "hey stephen i know looks can be deceiving but i know i saw a light in you",
+            "I was supposed to be sent away\nBut they forgot to come and get me",
             "we could leave the christmas lights up 'til january",
             "life was a willow and it bent right to your wind",
         ]
