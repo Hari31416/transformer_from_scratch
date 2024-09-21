@@ -284,7 +284,7 @@ def greedy_decode(
         msg = f"Input text is too long. Max length is {max_len}, but the input text is {source_length}"
         raise ValueError(msg)
 
-    source_mask = (source != source_pad_token).unsqueeze(-2) # should be all True
+    source_mask = (source != source_pad_token).unsqueeze(-2)  # should be all True
 
     if task == "generation":
         ys = source  # start with the source
@@ -452,6 +452,44 @@ class TransformerTrainerForGeneration(TransformerTrainer):
             device=self.device,
         )
 
+    def log_sample_to_wandb(self, wandb=None):
+        sample_taylor_swift_lyrics = [
+            "salt air and the rust on your door",
+            "no other sadness in the world would do"
+            "make sure nobody sees you leave hood over your head keep your eyes down",
+            "there i was again tonight forcing laughter faking smiles same old tired lonely place",
+            "i said remember this moment in the back of my mind",
+            "hey stephen i know looks can be deceiving but i know i saw a light in you",
+            "we could leave the christmas lights up 'til january",
+            "life was a willow and it bent right to your wind",
+        ]
+
+        generations = []
+        generation_ids = []
+        for sample in tqdm(
+            sample_taylor_swift_lyrics, desc="Generating...", disable=True
+        ):
+            generation, generation_id = self.generate(sample)
+            generations.append(generation[0])
+            generation_ids.append(generation_id[0].tolist())
+        log_dict = {
+            "generations": generations,
+            # "samples": sample_taylor_swift_lyrics,
+        }
+        if wandb is None:
+            from pprint import pprint
+
+            pprint(log_dict)
+        else:
+            text_table = wandb.Table(columns=["samples", "generations", "tokens"])
+            for i in range(len(sample_taylor_swift_lyrics)):
+                text_table.add_data(
+                    sample_taylor_swift_lyrics[i],
+                    generations[i],
+                    generation_ids[i],
+                )
+            wandb.log({"generation": text_table})
+
 
 class TranslationDataset(torch.utils.data.Dataset):
 
@@ -575,8 +613,7 @@ class GenerationDataset(torch.utils.data.Dataset):
 
         max_len = int(self.max_len * 0.66)  # one word may have multiple tokens
         lyrics_final = [
-            lyrics_list[i : i + self.max_len]
-            for i in range(0, len(lyrics_list), self.max_len)
+            lyrics_list[i : i + max_len] for i in range(0, len(lyrics_list), max_len)
         ]
 
         lyrics_final = [" ".join(lyric) for lyric in lyrics_final]
