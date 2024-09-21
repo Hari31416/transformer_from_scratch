@@ -224,6 +224,93 @@ class TransformerTrainer:
         pass  # Must be implemented in the child class
 
 
+def greedy_decode(
+    text: str,
+    model: M,
+    source_tokenizer: Tokenizer,
+    target_tokenizer: Tokenizer,
+    max_len: int = 32,
+    task: str = "translation",
+    prefix: str = "",
+    device: Optional[str] = None,
+    decoder_only_for_generation: bool = True,
+):
+    """A greedy decoder for the transformer model
+
+    Parameters
+    ----------
+    text : str
+        The input text to be translated or generated
+    model : M
+        The transformer model
+    source_tokenizer : Tokenizer
+        The source tokenizer
+    target_tokenizer : Tokenizer
+        The target tokenizer
+    max_len : int, optional
+        The maximum length of the output text, by default 32
+    task : str, optional
+        The task to perform. Either 'translation' or 'generation', by default "translation"
+    prefix : str, optional
+        The prefix to add to the input text, by default ""
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if task not in ["translation", "generation"]:
+        msg = f"Task must be either 'translation' or 'generation', but got {task}"
+        raise ValueError(msg)
+    text = f"[CLS]{prefix}{text}"
+    if task == "translation" or not decoder_only_for_generation:
+        text = f"{text}[SEP]"
+    text = [text]
+
+    max_len = max_len
+    source = source_tokenizer.encode_batch(text)
+    source = torch.tensor([enc.ids for enc in source]).to(device)
+    source_length = source.shape[1]
+    if source_length > max_len and task == "generation":
+        msg = f"Input text is too long. Max length is {max_len}, but the input text is {source_length}"
+        raise ValueError(msg)
+    source_pad_token = source_tokenizer.token_to_id("[PAD]")
+    source_mask = (source != source_pad_token).unsqueeze(-2)
+
+    if task == "generation":
+        ys = source  # start with the source
+    else:
+        ys = (
+            torch.zeros(1, 1)
+            .fill_(target_tokenizer.token_to_id("[CLS]"))
+            .type_as(source.data)
+        )
+
+    if task == "translation" or not decoder_only_for_generation:
+        memory = model.encode(source, source_mask)
+
+        out_f = lambda s, s_m: model.decode(memory, s, source_mask, s_m)
+    else:
+        out_f = lambda s, s_m: model.decode(s, s_m)  # decoder only for generation
+    end_token = target_tokenizer.token_to_id("[SEP]")
+
+    for i in range(max_len - 1):
+        out = out_f(ys, subsequent_mask(ys.size(1)).type_as(source.data))
+        prob = model.generator(out[:, -1])
+        _, next_word = torch.max(prob, dim=1)
+        next_word = next_word.data[0]
+        ys = torch.cat(
+            [ys, torch.zeros(1, 1).type_as(source.data).fill_(next_word)], dim=1
+        )
+        if next_word == end_token:
+            # if the next word is the end token, then break
+            break
+
+    rank = len(ys.shape)
+    if rank == 1:
+        ys = ys.unsqueeze(0)
+
+    return target_tokenizer.decode_batch(ys.tolist()), ys
+
+
 class TransformerTrainerForTranslation(TransformerTrainer):
     def __init__(
         self,
@@ -252,40 +339,16 @@ class TransformerTrainerForTranslation(TransformerTrainer):
         )
 
     def translate(self, text: str, **kwargs):
-        text = [f"[CLS]{text}[SEP]"]
-        max_len = self.max_len
-
-        source = self.source_tokenizer.encode_batch(text)
-        source = torch.tensor([enc.ids for enc in source]).to(self.device)
-        source_pad_token = self.source_tokenizer.token_to_id("[PAD]")
-        source_mask = (source != source_pad_token).unsqueeze(-2)
-
-        target_start_symbol = self.target_tokenizer.token_to_id("[CLS]")
-        memory = self.model.encode(source, source_mask)
-        ys = torch.zeros(1, 1).fill_(target_start_symbol).type_as(source.data)
-        end_token = self.target_tokenizer.token_to_id("[SEP]")
-
-        for i in range(max_len - 1):
-            out = self.model.decode(
-                memory,
-                ys,
-                source_mask,
-                subsequent_mask(ys.size(1)).type_as(source.data),
-            )
-            prob = self.model.generator(out[:, -1])
-            _, next_word = torch.max(prob, dim=1)
-            next_word = next_word.data[0]
-            ys = torch.cat(
-                [ys, torch.zeros(1, 1).type_as(source.data).fill_(next_word)], dim=1
-            )
-            if next_word == end_token:
-                break
-
-        rank = len(ys.shape)
-        if rank == 1:
-            ys = ys.unsqueeze(0)
-
-        return self.target_tokenizer.decode_batch(ys.tolist()), ys
+        return greedy_decode(
+            text=text,
+            model=self.model,
+            source_tokenizer=self.source_tokenizer,
+            target_tokenizer=self.target_tokenizer,
+            max_len=self.max_len,
+            task="translation",
+            prefix="",
+            device=self.device,
+        )
 
     def log_sample_to_wandb(self, wandb=None):
         samples = [
@@ -367,45 +430,17 @@ class TransformerTrainerForGeneration(TransformerTrainer):
             max_len,
         )
 
-    def greedy_decode(self, text: str, **kwargs):
-        text = [f"[CLS]{text}[SEP]"]
-        max_len = self.max_len
-
-        source = self.source_tokenizer.encode_batch(text)
-        source = torch.tensor([enc.ids for enc in source]).to(self.device)
-        source_length = source.shape[1]
-        if source_length > max_len:
-            msg = f"Input text is too long. Max length is {max_len}, but the input text is {source_length}"
-
-            raise ValueError(msg)
-        source_pad_token = self.source_tokenizer.token_to_id("[PAD]")
-        source_mask = (source != source_pad_token).unsqueeze(-2)
-
-        memory = self.model.encode(source, source_mask)
-        ys = source  # start with the source
-        end_token = self.target_tokenizer.token_to_id("[SEP]")
-
-        for i in range(max_len - 1):
-            out = self.model.decode(
-                memory,
-                ys,
-                source_mask,
-                subsequent_mask(ys.size(1)).type_as(source.data),
-            )
-            prob = self.model.generator(out[:, -1])
-            _, next_word = torch.max(prob, dim=1)
-            next_word = next_word.data[0]
-            ys = torch.cat(
-                [ys, torch.zeros(1, 1).type_as(source.data).fill_(next_word)], dim=1
-            )
-            if next_word == end_token:
-                break
-
-        rank = len(ys.shape)
-        if rank == 1:
-            ys = ys.unsqueeze(0)
-
-        return self.target_tokenizer.decode_batch(ys.tolist()), ys
+    def generate(self, text: str, **kwargs):
+        return greedy_decode(
+            text=text,
+            model=self.model,
+            source_tokenizer=self.source_tokenizer,
+            target_tokenizer=self.target_tokenizer,
+            max_len=self.max_len,
+            task="generation",
+            prefix="",
+            device=self.device,
+        )
 
 
 class TranslationDataset(torch.utils.data.Dataset):
