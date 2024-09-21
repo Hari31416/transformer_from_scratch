@@ -270,15 +270,21 @@ def greedy_decode(
         text = f"{text}[SEP]"
     text = [text]
 
-    max_len = max_len
+    source_pad_token = source_tokenizer.token_to_id("[PAD]")
+    end_token = target_tokenizer.token_to_id("[SEP]")
+
     source = source_tokenizer.encode_batch(text)
-    source = torch.tensor([enc.ids for enc in source]).to(device)
+    ids = [enc.ids for enc in source][0]
+    attension_masks = [enc.attention_mask for enc in source][0]
+    ids = [[i for i, m in zip(ids, attension_masks) if m == 1]]
+    source = torch.tensor(ids).to(device)
     source_length = source.shape[1]
+
     if source_length > max_len and task == "generation":
         msg = f"Input text is too long. Max length is {max_len}, but the input text is {source_length}"
         raise ValueError(msg)
-    source_pad_token = source_tokenizer.token_to_id("[PAD]")
-    source_mask = (source != source_pad_token).unsqueeze(-2)
+
+    source_mask = (source != source_pad_token).unsqueeze(-2) # should be all True
 
     if task == "generation":
         ys = source  # start with the source
@@ -295,7 +301,6 @@ def greedy_decode(
         out_f = lambda s, s_m: model.decode(memory, s, source_mask, s_m)
     else:
         out_f = lambda s, s_m: model.decode(s, s_m)  # decoder only for generation
-    end_token = target_tokenizer.token_to_id("[SEP]")
 
     for i in range(max_len - 1):
         out = out_f(ys, subsequent_mask(ys.size(1)).type_as(source.data))
