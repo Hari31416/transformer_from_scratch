@@ -384,3 +384,86 @@ class TransformerConfig(Config):
         "activation",
     ]
     ConfigFor = Transformer
+
+
+class DecoderOnlyTransformer(nn.Module):
+    """A standard Decoder architecture.
+
+    Attributes
+    ----------
+    target_vocab_size : int
+        The size of the target vocabulary.
+    N : int
+        The number of decoder layers.
+    d_model : int
+        The dimension of the model.
+    d_ff : int
+        The dimension of the feedforward network model.
+    h : int
+        The number of heads in the multiheadattention models.
+    dropout : float
+        The dropout value.
+    activation : nn.Module
+        The activation function.
+    """
+
+    def __init__(
+        self,
+        target_vocab_size: int,
+        N: int = 6,
+        d_model: int = 512,
+        d_ff: int = 2048,
+        h: int = 8,
+        dropout: int = 0.1,
+        activation: nn.Module = nn.ReLU,
+    ):
+        super(DecoderOnlyTransformer, self).__init__()
+        c = copy.deepcopy
+        attn = MultiHeadedAttention(h, d_model)
+        ff = PositionwiseFeedForward(d_model, d_ff, dropout, activation)
+        position = PositionalEncoding(d_model, dropout)
+
+        decoder = EncoderLayer(d_model, c(attn), c(ff), dropout)
+        self.decoder = Encoder(decoder, N)
+
+        self.target_embed = nn.Sequential(
+            Embeddings(d_model, target_vocab_size), c(position)
+        )
+        self.generator = Generator(d_model, target_vocab_size)
+
+        self.init_weights()
+
+    def init_weights(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def forward(self, target: T, target_mask: Optional[T] = None) -> T:
+
+        if target_mask is None:
+            target_mask = subsequent_mask(target.size(1)).type_as(target)
+
+        decoded = self.decoder(self.target_embed(target), target_mask)
+        return decoded
+
+    def decode(self, target: T, target_mask: Optional[T] = None) -> T:
+        return self.forward(target, target_mask)
+
+    def generate(self, x: T) -> T:
+        return self.generator(x)
+
+    def param_count(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+class DecoderOnlyTransformerConfig(Config):
+    ALLOWED_KEYS = [
+        "target_vocab_size",
+        "N",
+        "d_model",
+        "d_ff",
+        "h",
+        "dropout",
+        "activation",
+    ]
+    ConfigFor = DecoderOnlyTransformer
