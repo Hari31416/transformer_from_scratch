@@ -455,7 +455,7 @@ class TransformerTrainerForGeneration(TransformerTrainer):
     def log_sample_to_wandb(self, wandb=None):
         sample_taylor_swift_lyrics = [
             "salt air and the rust on your door",
-            "no other sadness in the world would do"
+            "no other sadness in the world would do",
             "make sure nobody sees you leave hood over your head keep your eyes down",
             "there i was again tonight forcing laughter faking smiles same old tired lonely place",
             "i said remember this moment in the back of my mind",
